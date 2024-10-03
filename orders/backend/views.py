@@ -15,11 +15,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from ujson import loads as load_json
 from yaml import load as load_yaml, Loader
-from serializers import UserSerializer, CategorySerializer, ShopSerializer, ProductInfoSerializer, \
+from backend.serializers import UserSerializer, CategorySerializer, ShopSerializer, ProductInfoSerializer, \
     OrderItemSerializer, OrderSerializer, ContactSerializer
-from models import Shop, Category, Product, ProductInfo, Parameter, ProductParameter, Order, OrderItem, \
+from backend.models import Shop, Category, Product, ProductInfo, Parameter, ProductParameter, Order, OrderItem, \
     Contact, ConfirmEmailToken
-from signals import new_user_registered, new_order
+from backend.signals import new_user_registered, new_order
 
 
 # Create your views here.
