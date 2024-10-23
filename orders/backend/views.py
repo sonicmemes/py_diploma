@@ -1,4 +1,6 @@
-import str2bool as strtobool
+import json
+
+from str2bool import str2bool
 
 from rest_framework.request import Request
 from django.contrib.auth import authenticate
@@ -307,32 +309,36 @@ class BasketView(APIView):
                """
         if not request.user.is_authenticated:
             return JsonResponse({'Status': False, 'Error': 'Log in required'}, status=403)
-
+        basket = Order.objects.filter(user_id=request.user.id, state='basket').first()
+        print(basket)
         items_sting = request.data.get('items')
         if items_sting:
             try:
                 items_dict = load_json(items_sting)
+                items_list = items_dict.get('items', [])
+                print(items_list)
+                for order_item in items_list:
+                    order_item.update({'order': basket.id})
+                print(items_dict)
             except ValueError:
                 return JsonResponse({'Status': False, 'Errors': 'Неверный формат запроса'})
-            else:
-                basket, _ = Order.objects.get_or_create(user_id=request.user.id, state='basket')
-                objects_created = 0
-                for order_item in items_dict:
-                    order_item.update({'order': basket.id})
-                    serializer = OrderItemSerializer(data=order_item)
-                    if serializer.is_valid():
-                        try:
-                            serializer.save()
-                        except IntegrityError as error:
-                            return JsonResponse({'Status': False, 'Errors': str(error)})
-                        else:
-                            objects_created += 1
 
+            # Move the else block here
+            basket, _ = Order.objects.get_or_create(user_id=request.user.id, state='basket')
+            objects_created = 0
+            for order_item in items_list:
+                serializer = OrderItemSerializer(data=order_item)
+                if serializer.is_valid():
+                    try:
+                        serializer.save()
+                    except IntegrityError as error:
+                        return JsonResponse({'Status': False, 'Errors': str(error)})
                     else:
+                        objects_created += 1
+                else:
+                    return JsonResponse({'Status': False, 'Errors': serializer.errors})
 
-                        return JsonResponse({'Status': False, 'Errors': serializer.errors})
-
-                return JsonResponse({'Status': True, 'Создано объектов': objects_created})
+            return JsonResponse({'Status': True, 'Создано объектов': objects_created})
         return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
 
     # удалить товары из корзины
@@ -369,30 +375,36 @@ class BasketView(APIView):
     def put(self, request, *args, **kwargs):
         """
                Update the items in the user's basket.
-
                Args:
                - request (Request): The Django request object.
-
                Returns:
                - JsonResponse: The response indicating the status of the operation and any errors.
                """
         if not request.user.is_authenticated:
             return JsonResponse({'Status': False, 'Error': 'Log in required'}, status=403)
 
-        items_sting = request.data.get('items')
-        if items_sting:
+        # Get the JSON payload from the request body
+        data = request.POST.get('items')
+        if data:
             try:
-                items_dict = load_json(items_sting)
-            except ValueError:
-                return JsonResponse({'Status': False, 'Errors': 'Неверный формат запроса'})
-            else:
+                data = json.loads(data)
+                items_list = data.get('ordered_items', [])
+            except json.JSONDecodeError:
+                return JsonResponse({'Status': False, 'Error': 'Invalid JSON data'})
+
+            if items_list:
                 basket, _ = Order.objects.get_or_create(user_id=request.user.id, state='basket')
                 objects_updated = 0
-                for order_item in items_dict:
-                    if type(order_item['id']) == int and type(order_item['quantity']) == int:
-                        objects_updated += OrderItem.objects.filter(order_id=basket.id, id=order_item['id']).update(
-                            quantity=order_item['quantity'])
-
+                for order_item in items_list:
+                    if isinstance(order_item, dict) and 'id' in order_item and 'quantity' in order_item:
+                        if isinstance(order_item['id'], int) and isinstance(order_item['quantity'], int):
+                            order_item_obj = OrderItem.objects.filter(id=order_item['id']).first()
+                            if order_item_obj:
+                                order_item_obj.quantity = order_item['quantity']
+                                order_item_obj.save()
+                                objects_updated += 1
+                            else:
+                                return JsonResponse({'Status': False, 'Error': 'Order item not found'})
                 return JsonResponse({'Status': True, 'Обновлено объектов': objects_updated})
         return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
 
@@ -499,13 +511,16 @@ class PartnerState(APIView):
         state = request.data.get('state')
         if state:
             try:
-                Shop.objects.filter(user_id=request.user.id).update(state=strtobool(state))
-                return JsonResponse({'Status': True})
-            except ValueError as error:
-                return JsonResponse({'Status': False, 'Errors': str(error)})
-
-        return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
-
+                state_value = str2bool(state)
+                if state_value is not None:
+                    Shop.objects.filter(user_id=request.user.id).update(state=state_value)
+                    return JsonResponse({'Status': True})
+                else:
+                    return JsonResponse({'Status': False, 'Errors': 'Invalid state value'})
+            except ValueError:
+                return JsonResponse({'Status': False, 'Errors': 'Invalid state value'})
+        else:
+            return JsonResponse({'Status': False, 'Errors': 'State value is required'})
 
 class PartnerOrders(APIView):
     """

@@ -123,12 +123,16 @@ class User(AbstractUser):
 
 
 class Shop(models.Model):
+    STATE_CHOICES = [
+        ('on', 'On'),
+        ('off', 'Off')
+    ]
     name = models.CharField(max_length=50, verbose_name='Название')
     url = models.URLField(verbose_name='Ссылка', null=True, blank=True)
     user = models.OneToOneField(User, verbose_name='Пользователь',
                                 blank=True, null=True,
                                 on_delete=models.CASCADE)
-    state = models.BooleanField(verbose_name='статус получения заказов', default=True)
+    state = models.CharField(verbose_name='статус получения заказов', max_length=3, choices=STATE_CHOICES)
 
     # filename
 
