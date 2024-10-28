@@ -398,7 +398,7 @@ class BasketView(APIView):
                 for order_item in items_list:
                     if isinstance(order_item, dict) and 'id' in order_item and 'quantity' in order_item:
                         if isinstance(order_item['id'], int) and isinstance(order_item['quantity'], int):
-                            order_item_obj = OrderItem.objects.filter(id=order_item['id']).first()
+                            order_item_obj = OrderItem.objects.filter(order_id=basket.id, id=order_item['id']).first()
                             if order_item_obj:
                                 order_item_obj.quantity = order_item['quantity']
                                 order_item_obj.save()
@@ -549,7 +549,7 @@ class PartnerOrders(APIView):
             return JsonResponse({'Status': False, 'Error': 'Только для магазинов'}, status=403)
 
         order = Order.objects.filter(
-            ordered_items__product_info__shop__user_id=request.user.id).exclude(state='basket').prefetch_related(
+            ordered_items__product_info__shop__user_id=request.user.id).prefetch_related(
             'ordered_items__product_info__product__category',
             'ordered_items__product_info__product_parameters__parameter').select_related('contact').annotate(
             total_sum=Sum(F('ordered_items__quantity') * F('ordered_items__product_info__price'))).distinct()
@@ -702,7 +702,7 @@ class OrderView(APIView):
         if not request.user.is_authenticated:
             return JsonResponse({'Status': False, 'Error': 'Log in required'}, status=403)
         order = Order.objects.filter(
-            user_id=request.user.id).exclude(state='basket').prefetch_related(
+            user_id=request.user.id, state='new').prefetch_related(
             'ordered_items__product_info__product__category',
             'ordered_items__product_info__product_parameters__parameter').select_related('contact').annotate(
             total_sum=Sum(F('ordered_items__quantity') * F('ordered_items__product_info__price'))).distinct()
@@ -714,10 +714,8 @@ class OrderView(APIView):
     def post(self, request, *args, **kwargs):
         """
                Put an order and send a notification.
-
                Args:
                - request (Request): The Django request object.
-
                Returns:
                - JsonResponse: The response indicating the status of the operation and any errors.
                """
@@ -727,16 +725,17 @@ class OrderView(APIView):
         if {'id', 'contact'}.issubset(request.data):
             if request.data['id'].isdigit():
                 try:
-                    is_updated = Order.objects.filter(
-                        user_id=request.user.id, id=request.data['id']).update(
-                        contact_id=request.data['contact'],
-                        state='new')
-                except IntegrityError as error:
-                    print(error)
-                    return JsonResponse({'Status': False, 'Errors': 'Неправильно указаны аргументы'})
-                else:
-                    if is_updated:
+                    order_item = OrderItem.objects.get(id=request.data['id'])
+                    if order_item.order.user_id == request.user.id:
+                        order_item.order.contact_id = request.data['contact']
+                        order_item.order.state = 'new'
+                        order_item.order.save()
+                        Order.objects.filter(user_id=request.user.id, state='basket').update(state='new')
                         new_order.send(sender=self.__class__, user_id=request.user.id)
                         return JsonResponse({'Status': True})
-
+                    else:
+                        return JsonResponse({'Status': False, 'Error': 'Order item not found'})
+                except OrderItem.DoesNotExist:
+                    return JsonResponse({'Status': False, 'Error': 'Order item not found'})
         return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
+
