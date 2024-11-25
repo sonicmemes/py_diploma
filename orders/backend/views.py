@@ -1,5 +1,6 @@
 import json
 
+from rest_framework import status
 from str2bool import str2bool
 
 from rest_framework.request import Request
@@ -21,11 +22,14 @@ from backend.serializers import UserSerializer, CategorySerializer, ShopSerializ
     OrderItemSerializer, OrderSerializer, ContactSerializer
 from backend.models import Shop, Category, Product, ProductInfo, Parameter, ProductParameter, Order, OrderItem, \
     Contact, ConfirmEmailToken
-from backend.signals import new_user_registered, new_order
-
+# from backend.signals import new_user_registered, new_order
+from orders.tasks import send_new_user_registered_email, send_new_order_email
+from django.db.models.signals import post_save
+from backend.models import User
 
 # Create your views here.
 class RegisterAccount(APIView):
+    serializer_class = UserSerializer
     """
     Для регистрации покупателей
     """
@@ -63,7 +67,7 @@ class RegisterAccount(APIView):
                     user.set_password(request.data['password'])
                     user.save()
                     # Send a new user signal
-                    new_user_registered.send(sender=self.__class__, user_id=user.id)
+                    post_save.connect(send_new_user_registered_email.delay, sender=User)
                     return JsonResponse({'Status': True})
                 else:
                     # If the user is invalid, return an error message
@@ -73,39 +77,30 @@ class RegisterAccount(APIView):
         return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
 
 
+from django.db import transaction
+
 class ConfirmAccount(APIView):
-    """
-    Класс для подтверждения почтового адреса
-    """
-
-    # Регистрация методом POST
+    serializer_class = UserSerializer
     def post(self, request, *args, **kwargs):
-        """
-                Подтверждает почтовый адрес пользователя.
+        # Print out the token key
+        print("Token key in view:", request.data['token'])
 
-                Args:
-                - request (Request): The Django request object.
-
-                Returns:
-                - JsonResponse: The response indicating the status of the operation and any errors.
-                """
-        # проверяем обязательные аргументы
         if {'email', 'token'}.issubset(request.data):
 
-            token = ConfirmEmailToken.objects.filter(user__email=request.data['email'],
-                                                     key=request.data['token']).first()
-            if token:
-                token.user.is_active = True
-                token.user.save()
-                token.delete()
-                return JsonResponse({'Status': True})
-            else:
-                return JsonResponse({'Status': False, 'Errors': 'Неправильно указан токен или email'})
-
-        return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
+            token = ConfirmEmailToken.objects.get(user=User.objects.get(email=request.data['email']), key=request.data['token'])
+            print("Token found:", token)
+            token.user.is_active = True
+            token.user.save()  # Save the user object to the database
+            print("Deleting token...")
+            token.delete()  # Delete the confirmation token
+            print("Token deleted.")
+            return JsonResponse({'Status': True})  # Return a response
+        else:
+            return JsonResponse({'Status': False, 'Error': 'Missing required arguments'})
 
 
 class AccountDetails(APIView):
+    serializer_class = UserSerializer
     """
     A class for managing user account details.
 
@@ -169,10 +164,11 @@ class AccountDetails(APIView):
             user_serializer.save()
             return JsonResponse({'Status': True})
         else:
-            return JsonResponse({'Status': False, 'Errors': user_serializer.errors})
+            return JsonResponse({'Status': False, 'Errors': user_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class LoginAccount(APIView):
+    serializer_class = UserSerializer
     """
     Класс для авторизации пользователей
     """
@@ -211,14 +207,29 @@ class CategoryView(ListAPIView):
 
 
 class ShopView(ListAPIView):
-    """
-    Класс для просмотра списка магазинов
-    """
-    queryset = Shop.objects.filter(state=True)
     serializer_class = ShopSerializer
+
+    def get_queryset(self):
+        try:
+            queryset = Shop.objects.filter(state=True)
+            print("Queryset:", queryset)
+            print("Queryset count:", queryset.count())
+            print("Queryset values:", list(queryset.values()))
+            for shop in queryset:
+                print("Shop state:", shop.state)
+            return queryset
+        except Exception as e:
+            print("Error:", e)
+            return []
+
+    def get(self, request):
+        queryset = self.get_queryset()
+        serializer = ShopSerializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 class ProductInfoView(APIView):
+    serializer_class = ProductInfoSerializer
     """
         A class for searching products.
 
@@ -261,6 +272,7 @@ class ProductInfoView(APIView):
 
 
 class BasketView(APIView):
+    serializer_class = OrderSerializer
     """
     A class for managing the user's shopping basket.
 
@@ -410,6 +422,7 @@ class BasketView(APIView):
 
 
 class PartnerUpdate(APIView):
+    serializer_class = ShopSerializer
     """
     Класс для обновления прайса от поставщика
     """
@@ -461,6 +474,7 @@ class PartnerUpdate(APIView):
 
 
 class PartnerState(APIView):
+    serializer_class = ShopSerializer
     """
        A class for managing partner state.
 
@@ -523,6 +537,7 @@ class PartnerState(APIView):
             return JsonResponse({'Status': False, 'Errors': 'State value is required'})
 
 class PartnerOrders(APIView):
+    serializer_class = OrderSerializer
     """
     Класс для получения заказов поставщиками
      Methods:
@@ -559,6 +574,7 @@ class PartnerOrders(APIView):
 
 
 class ContactView(APIView):
+    serializer_class = ContactSerializer
     """
        A class for managing contact information.
 
@@ -676,6 +692,7 @@ class ContactView(APIView):
 
 
 class OrderView(APIView):
+    serializer_class = OrderSerializer
     """
     Класс для получения и размешения заказов пользователями
     Methods:
@@ -731,7 +748,8 @@ class OrderView(APIView):
                         order_item.order.state = 'new'
                         order_item.order.save()
                         Order.objects.filter(user_id=request.user.id, state='basket').update(state='new')
-                        new_order.send(sender=self.__class__, user_id=request.user.id)
+                        user_id = order_item.order.user_id
+                        send_new_order_email.delay(user_id=user_id)
                         return JsonResponse({'Status': True})
                     else:
                         return JsonResponse({'Status': False, 'Error': 'Order item not found'})

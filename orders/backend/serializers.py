@@ -36,6 +36,9 @@ class ShopSerializer(serializers.ModelSerializer):
         fields = ('id', 'name', 'state',)
         read_only_fields = ('id',)
 
+    def filter_queryset(self, queryset):
+        return queryset.filter(state=True)
+
 
 class ProductSerializer(serializers.ModelSerializer):
     category = serializers.StringRelatedField()
